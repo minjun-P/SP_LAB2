@@ -146,6 +146,22 @@ static int dirent_compare(const void *a, const void *b)
   return strcmp(e1->d_name, e2->d_name);
 }
 
+// Filtering 코드
+bool match(const char* str, const char* pattern) {
+  while(*str != '\0') {
+    if (submatch(str, pattern)) {
+      return true;
+    }
+    str++;
+  }
+}
+
+bool submatch(const char* s, const char* p) {
+  if (*s == '\0' && *p == '\0') return true;
+  if (*s != *p) return false;
+  
+  return submatch(s+1, p+1);
+}
 
 /// @brief recursively process directory @a dn and print its tree
 ///
@@ -161,6 +177,14 @@ void process_dir(const char *dn, const char *pstr, struct summary *stats, unsign
     perror("opendir");
     return;
   }
+
+  const int depth = strlen(pstr) / 2;
+  if (depth > max_depth) {
+    closedir(dir);
+    return;
+  }
+
+
 
   // 2. 디렉토리 엔트리 읽기
   struct dirent *entry;
@@ -277,6 +301,7 @@ int main(int argc, char *argv[])
   //
   // parse arguments
   //
+
   for (int i = 1; i < argc; i++) {
     if (argv[i][0] == '-') {
       // format: "-<flag>"
@@ -314,6 +339,8 @@ int main(int argc, char *argv[])
       }
     }
   }
+
+  printf("Max Depth : %d\n", max_depth); // for debugging
 
   // if no directory was specified, use the current directory
   if (ndir == 0) directories[ndir++] = CURDIR;
