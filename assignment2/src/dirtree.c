@@ -3,8 +3,8 @@
 //
 /// @file
 /// @brief resursively traverse directory tree and list all entries
-/// @author <yourname>
-/// @studid <studentid>
+/// @author 박민준
+/// @studid 2018-14751
 //--------------------------------------------------------------------------------------------------
 
 #define _GNU_SOURCE
@@ -30,6 +30,8 @@
 #define MAX_PATH_LEN 1024     ///< maximum length of a path
 #define MAX_DEPTH 20          ///< maximum depth of directory tree (for -d option)
 int max_depth = MAX_DEPTH;    ///< maximum depth of directory tree (for -d option)
+#define MAX_PATH_DISPLAY_LEN 54
+#define MAX_PATH_DISPLAY_LEN_SUMMARY 68
 
 /// @brief struct holding the summary
 struct summary {
@@ -49,7 +51,40 @@ const char *print_formats[8] = {
   "----------------------------------------------------------------------------------------------------\n",
   "%-54s  %8.8s:%-8.8s  %10llu  %8llu    %c\n",
   "Invalid pattern syntax",
+  "%-68s   %14llu %9llu\n", // Summary line
 };
+
+const char* plural(int count, const char* singular, const char* plural) {
+    return (count == 1) ? singular : plural;
+}
+const char* summary_line(struct summary* stats) {
+    static char buffer[100];
+    snprintf(buffer, sizeof(buffer), "%d %s, %d %s, %d %s, %d %s, and %d %s",
+             stats->files, plural(stats->files, "file", "files"),
+             stats->dirs, plural(stats->dirs, "directory", "directories"),
+             stats->links, plural(stats->links, "link", "links"),
+             stats->fifos, plural(stats->fifos, "pipe", "pipes"),
+             stats->socks, plural(stats->socks, "socket", "sockets"));
+    if (strlen(buffer) > MAX_PATH_DISPLAY_LEN_SUMMARY) {
+        buffer[MAX_PATH_DISPLAY_LEN_SUMMARY - 3] = '.';
+        buffer[MAX_PATH_DISPLAY_LEN_SUMMARY - 2] = '.';
+        buffer[MAX_PATH_DISPLAY_LEN_SUMMARY - 1] = '.';
+        buffer[MAX_PATH_DISPLAY_LEN_SUMMARY] = '\0';
+    }
+    return buffer;
+}
+
+
+
+char filetype_char(mode_t mode) {
+    if (S_ISREG(mode))  return ' ';
+    if (S_ISDIR(mode))  return 'd';
+    if (S_ISLNK(mode))  return 'l';
+    if (S_ISFIFO(mode)) return 'f';
+    if (S_ISSOCK(mode)) return 's';
+    return ' ';
+}
+
 const char* pattern = NULL;  ///< pattern for filtering entries
 
 /// @brief abort the program with EXIT_FAILURE and an optional error message
@@ -64,6 +99,8 @@ void panic(const char* msg, const char* format)
   }
   exit(EXIT_FAILURE);
 }
+
+
 
 
 /// @brief read next directory entry from open directory 'dir'. Ignores '.' and '..' entries
@@ -118,9 +155,74 @@ static int dirent_compare(const void *a, const void *b)
 /// @param flags output control flags (F_*)
 void process_dir(const char *dn, const char *pstr, struct summary *stats, unsigned int flags)
 {
-  //
-  // TODO
-  //
+  // 1. 폴더 열기
+  DIR *dir = opendir(dn);
+  if (!dir) {
+    perror("opendir");
+    return;
+  }
+
+  // 2. 디렉토리 엔트리 읽기
+  struct dirent *entry;
+  
+  int entry_count = 0;
+  int capacity = 10;
+  struct dirent* entry_list = malloc(sizeof(struct dirent) * capacity);
+
+  if (!entry_list) {
+    closedir(dir);
+    panic("Memory allocation failed", NULL);
+  }
+  while ((entry = get_next(dir)) != NULL) {
+    if (entry_count >= capacity) {
+      capacity *= 2;
+      struct dirent *tmp = realloc(entry_list, sizeof(struct dirent) * capacity);
+      if (!tmp) {
+        free(entry_list);
+        closedir(dir);
+        panic("Memory allocation failed", NULL);
+      }
+      entry_list = tmp;
+    }
+    entry_list[entry_count++] = *entry;
+  }
+  // 정렬
+  qsort(entry_list, entry_count, sizeof(struct dirent), dirent_compare);
+  // 3. 엔트리 출력
+  for (int i = 0; i < entry_count; i++) {
+    struct dirent target = entry_list[i];
+    struct stat st;
+    char full_path[MAX_PATH_LEN];
+    snprintf(full_path, sizeof(full_path), "%s/%s", dn, target.d_name);
+    lstat(full_path, &st);
+    if (S_ISDIR(st.st_mode)) stats->dirs++;
+    else if (S_ISREG(st.st_mode)) stats->files++;
+    else if (S_ISLNK(st.st_mode)) stats->links++;
+    else if (S_ISFIFO(st.st_mode)) stats->fifos++;
+    else if (S_ISSOCK(st.st_mode)) stats->socks++;
+    stats->size += st.st_size;
+    stats->blocks += st.st_blocks;
+    char name_with_prefix[MAX_PATH_LEN];
+    snprintf(name_with_prefix, sizeof(name_with_prefix), "%s%s", pstr, target.d_name);
+    size_t len = strlen(name_with_prefix);
+    if (len > MAX_PATH_DISPLAY_LEN) {
+      name_with_prefix[MAX_PATH_DISPLAY_LEN - 3] = '.';
+      name_with_prefix[MAX_PATH_DISPLAY_LEN - 2] = '.';
+      name_with_prefix[MAX_PATH_DISPLAY_LEN - 1] = '.';
+      name_with_prefix[MAX_PATH_DISPLAY_LEN] = '\0';
+    }
+
+    
+    printf(print_formats[2], name_with_prefix, getpwuid(st.st_uid)->pw_name, getgrgid(st.st_gid)->gr_name, st.st_size, st.st_blocks, filetype_char(st.st_mode));
+    if (S_ISDIR(st.st_mode)) {
+      char new_prefix[MAX_PATH_LEN];
+      snprintf(new_prefix, sizeof(new_prefix), "%s  ", pstr);
+      char full_path[MAX_PATH_LEN];
+      snprintf(full_path, sizeof(full_path), "%s/%s", dn, target.d_name);
+      process_dir(full_path, new_prefix, stats, flags);
+    }
+  }
+  closedir(dir);
 }
 
 
@@ -156,6 +258,7 @@ void syntax(const char *argv0, const char *error, ...)
 
   exit(EXIT_FAILURE);
 }
+
 
 
 /// @brief program entry point
@@ -215,26 +318,31 @@ int main(int argc, char *argv[])
   // if no directory was specified, use the current directory
   if (ndir == 0) directories[ndir++] = CURDIR;
 
+  // Directory 순회 시작
+  for (int i =0; i<ndir; i++) {
+    printf("%s", print_formats[0]);
+    printf("%s", print_formats[1]);
+    const char *curr_dir = directories[i];
+    printf("%s\n", curr_dir);
+    struct summary dstat = {0}; // directory statistics
+    process_dir(curr_dir, "  ", &dstat, flags);
+    printf("%s", print_formats[1]);
 
-  //
-  // process each directory
-  //
-  // TODO
-  //
-  // Pseudo-code
-  // - reset statistics (tstat)
-  // - loop over all entries in 'root directories' (number of entires stored in 'ndir')
-  //   - reset statistics (dstat)
-  //   - print header
-  //   - print directory name
-  //   - call process_dir() for the directory
-  //   - print summary & update statistics
-  //...
+    // aggregate statistics
+    tstat.dirs   += dstat.dirs;
+    tstat.files  += dstat.files;
+    tstat.links  += dstat.links;
+    tstat.fifos  += dstat.fifos;
+    tstat.socks  += dstat.socks;
+    tstat.size   += dstat.size;
+    tstat.blocks += dstat.blocks;
+  
+    printf(print_formats[4], summary_line(&dstat), dstat.size, dstat.blocks);
+    if (ndir >1) {
+      printf("\n");
+    }
+  }
 
-
-  //
-  // print aggregate statistics if more than one directory was traversed
-  //
   if (ndir > 1) {
     printf("Analyzed %d directories:\n"
       "  total # of files:        %16d\n"
